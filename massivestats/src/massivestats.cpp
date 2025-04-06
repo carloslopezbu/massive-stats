@@ -17,62 +17,35 @@ py::array_t<double> mean(py::array_t<double, py::array::c_style | py::array::for
     const size_t cols = buf.shape[1];
     const double* data = static_cast<double*>(buf.ptr);
 
-    std::vector<double> result;
+    unsigned int x_size = (axis == 0) ? cols : rows;
+    unsigned int y_size = (axis == 0) ? rows : cols;
+    std::vector<double> result(x_size, 0.0); // Cambiado a std::vector
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    num_threads = std::max(1u, num_threads);
+    size_t chunk_size = (x_size + num_threads - 1) / num_threads;
 
-    if (axis == 0) {
-        result.resize(cols, 0.0);
-        unsigned int num_threads = std::thread::hardware_concurrency();
-        num_threads = std::max(1u, num_threads);
-        size_t chunk_size = (cols + num_threads - 1) / num_threads;
-
-        std::vector<std::thread> threads;
-        for (size_t i = 0; i < num_threads; ++i) {
-            size_t start_col = i * chunk_size;
-            size_t end_col = std::min(start_col + chunk_size, cols);
-            if (start_col >= end_col) break;
-            threads.emplace_back([&, start_col, end_col]() {
-                std::vector<double> local_sums(end_col - start_col, 0.0);
-                for (size_t row = 0; row < rows; ++row) {
-                    const double* row_data = data + row * cols;
-                    for (size_t col = start_col; col < end_col; ++col) {
-                        local_sums[col - start_col] += row_data[col];
-                    }
+    std::vector<std::thread> threads(num_threads); // Cambiado a std::vector
+    for (size_t i = 0; i < num_threads; ++i) {
+        size_t start = i * chunk_size;
+        size_t end = std::min(start + chunk_size, static_cast<size_t>(x_size)); // Conversión explícita
+        if (start >= end) break;
+        threads[i] = std::thread([&, start, end]() {
+            std::vector<double> local_sums(end - start, 0.0); // Cambiado a std::vector
+            for (size_t y = 0; y < y_size; ++y) {
+                const double* y_data = data + y * x_size;
+                for (size_t x = start; x < end; ++x) {
+                    local_sums[x - start] += y_data[x];
                 }
-                for (size_t i = 0; i < local_sums.size(); ++i) {
-                    result[start_col + i] = local_sums[i] / rows;
-                }
-            });
-        }
-        for (auto& thread : threads) {
+            }
+            for (size_t i = 0; i < local_sums.size(); ++i) {
+                result[start + i] = local_sums[i] / y_size;
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        if (thread.joinable()) {
             thread.join();
         }
-    } else if (axis == 1) {
-        result.resize(rows, 0.0);
-        unsigned int num_threads = std::thread::hardware_concurrency();
-        num_threads = std::max(1u, num_threads);
-        size_t chunk_size = (rows + num_threads - 1) / num_threads;
-
-        std::vector<std::thread> threads;
-        for (size_t i = 0; i < num_threads; ++i) {
-            size_t start_row = i * chunk_size;
-            size_t end_row = std::min(start_row + chunk_size, rows);
-            if (start_row >= end_row) break;
-            threads.emplace_back([&, start_row, end_row]() {
-                for (size_t row = start_row; row < end_row; ++row) {
-                    double sum = 0.0;
-                    const double* row_data = data + row * cols;
-                    for (size_t col = 0; col < cols; ++col) {
-                        sum += row_data[col];
-                    }
-                    result[row] = sum / cols;
-                }
-            });
-        }
-        for (auto& thread : threads) {
-            thread.join();
-        }
-    } else {
-        throw std::runtime_error("Axis must be 0 (columns) or 1 (rows)");
     }
 
     py::array_t<double> output(result.size());
